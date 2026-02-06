@@ -8,19 +8,24 @@ import sys
 import time
 import os
 import random
+import urllib3
+
+# Desabilita o aviso de "InsecureRequestWarning" quando usamos proxy sem verificar SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- Cores ANSI ---
 class Cores:
-    ORANGE = '\033[1;38;5;208m'
     BLUE = '\033[1;34m'
     GREEN = '\033[0;32m'
+    ORANGE = '\033[1;38;5;208m'
     RED = '\033[1;91m'
     YELLOW = '\033[0;33m'
     YELLOW_STRONG = '\033[1;93m'
     NC = '\033[0m'
 
-# --- Variáveis Globais de Controle ---
-stop_event = threading.Event() # Sinalizador para parar as threads
+# --- Variáveis Globais ---
+# Sinalizador para parar as threads
+stop_event = threading.Event()
 
 # Lista de User-Agents para evitar bloqueios simples de WAF/Bot detection
 USER_AGENTS = [
@@ -36,18 +41,20 @@ class CustomArgumentParser(argparse.ArgumentParser):
         self.print_help()
         self.exit(2)
 
-def worker(q, base_url, print_lock):
+def worker(q, base_url, proxies, print_lock):
     """
     Consome itens da fila. Verifica o stop_event a cada iteração
     para permitir uma parada rápida.
+    Agora recebe 'proxies' como argumento.
     """
+    
     while not stop_event.is_set():
         if q.empty():
             break
         
         try:
             # timeout curto no get para verificar o stop_event frequentemente se a fila estiver vazia
-            path = q.get(timeout=0.1) 
+            path = q.get(timeout=0.1)
         except:
             continue
 
@@ -55,8 +62,19 @@ def worker(q, base_url, print_lock):
         headers = {'User-Agent': random.choice(USER_AGENTS)}
         
         try:
-            # Timeout reduzido para agilizar
-            response = requests.get(full_url, headers=headers, timeout=3, allow_redirects=False)
+            # Se tiver proxy, verify deve ser False para evitar erro de certificado SSL
+            # Se proxies for None, verify pode ser True (ou padrão)
+            verify_ssl = False if proxies else True
+
+            response = requests.get(
+                full_url, 
+                headers=headers, 
+                proxies=proxies, 
+                verify=verify_ssl, # Ignora SSL se estiver usando proxy
+                timeout=5, # Timeout um pouco maior, pois proxies podem adicionar latência
+                allow_redirects=False
+            )
+            
             http_code = response.status_code
             
             # Lógica de output
@@ -71,15 +89,16 @@ def worker(q, base_url, print_lock):
                 elif http_code == 401:
                     print(f"{Cores.RED}[!] Auth Requerida (401): {full_url}{Cores.NC}")
                     
+        # Erros de conexão são ignorados para não poluir a tela
         except requests.exceptions.RequestException:
-            pass # Erros de conexão são ignorados para não poluir a tela
+            pass
         finally:
             q.task_done()
 
 def main():
     parser = CustomArgumentParser(
-        description="Descobridor de diretórios e arquivos (Brute Force).",
-        epilog=f"Exemplo: python3 {sys.argv[0]} -d http://alvo.com -w wordlist.txt -x php,html,txt -t 50",
+        description="Descobridor de diretórios (Brute Force) - V3.0",
+        epilog=f"Exemplo com Proxy: python3 {sys.argv[0]} -d http://alvo.com -w wordlist.txt -p http://127.0.0.1:8080",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
@@ -89,11 +108,22 @@ def main():
     required_args.add_argument("-d", "--dominio", dest="dominio", help="URL alvo.", required=True)
     required_args.add_argument("-w", "--wordlist", dest="wordlist", help="Arquivo de wordlist.", required=True)
     
-    optional_args.add_argument("-t", "--threads", dest="threads", help="Nº de Threads (Padrão: 10).", type=int, default=10)
-    optional_args.add_argument("-x", "--extensions", dest="extensions", help="Extensões separadas por vírgula (ex: php,html).", default="")
+    optional_args.add_argument("-t", "--threads", dest="threads", help="Nº Threads (Padrão: 10).", type=int, default=10)
+    optional_args.add_argument("-x", "--extensions", dest="extensions", help="Extensões (ex: php,html).", default="")
+    optional_args.add_argument("-p", "--proxy", dest="proxy", help="URL do Proxy (ex: http://127.0.0.1:8080).", default=None)
     
     args = parser.parse_args()
     
+    # Configuração do Proxy
+    proxies = None
+    if args.proxy:
+        proxies = {
+            "http": args.proxy,
+            "https": args.proxy
+        }
+        print(f"{Cores.YELLOW_STRONG}[!] Proxy Ativado:{Cores.NC} {args.proxy}")
+        print(f"{Cores.YELLOW}[i] Verificação SSL desabilitada para compatibilidade com proxy.{Cores.NC}\n")
+
     # Tratamento da URL
     dominio_alvo = args.dominio
     if not (dominio_alvo.startswith('http://') or dominio_alvo.startswith('https://')):
@@ -112,9 +142,9 @@ def main():
 
     print(f"{Cores.YELLOW_STRONG}[*] Alvo:{Cores.NC} {base_url}")
     print(f"{Cores.YELLOW_STRONG}[*] Wordlist:{Cores.NC} {args.wordlist}")
-    if ext_list:
-        print(f"{Cores.YELLOW_STRONG}[*] Extensões:{Cores.NC} {', '.join(ext_list)}")
-    print(f"{Cores.YELLOW_STRONG}[*] Threads:{Cores.NC} {args.threads}\n")
+    print(f"{Cores.YELLOW_STRONG}[*] Threads:{Cores.NC} {args.threads}")
+    if ext_list: print(f"{Cores.YELLOW_STRONG}[*] Exts:{Cores.NC} {', '.join(ext_list)}")
+    print("-" * 40 + "\n")
 
     # Populando a fila
     word_queue = Queue()
@@ -124,7 +154,7 @@ def main():
                 word = line.strip()
                 if not word: continue
                 
-                # Adiciona o diretório puro
+                 # Adiciona o diretório puro
                 word_queue.put(word)
                 
                 # Adiciona variações com extensão, se houver
@@ -137,9 +167,10 @@ def main():
     print_lock = threading.Lock()
     threads_list = []
 
-    # Iniciando Threads
+    # Iniciando as threads
     for _ in range(args.threads):
-        t = threading.Thread(target=worker, args=(word_queue, base_url, print_lock))
+        # Passamos 'proxies' para o worker agora
+        t = threading.Thread(target=worker, args=(word_queue, base_url, proxies, print_lock))
         t.daemon = True
         t.start()
         threads_list.append(t)
@@ -147,7 +178,8 @@ def main():
     # Loop principal que mantém o script vivo e permite capturar Ctrl+C
     try:
         while not word_queue.empty():
-            time.sleep(0.5) # Breve pausa para não consumir 100% da CPU verificando
+            # Breve pausa para não consumir 100% da CPU verificando
+            time.sleep(0.5)
             # Se todas as threads morreram por algum motivo, sai
             if not any(t.is_alive() for t in threads_list):
                 break
@@ -157,8 +189,8 @@ def main():
         print(f"\n{Cores.GREEN}[*] Varredura concluída.{Cores.NC}")
 
     except KeyboardInterrupt:
-        print(f"\n\n{Cores.RED}[!] Encerrando varredura... (Aguarde as threads pararem){Cores.NC}")
-        stop_event.set() # Avisa as threads para pararem
+        print(f"\n\n{Cores.RED}[!] Encerrando varredura...{Cores.NC}")
+        stop_event.set()    # Avisa as threads para pararem
         sys.exit(0)
 
 if __name__ == "__main__":
