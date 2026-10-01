@@ -2,9 +2,12 @@
 
 > Uma ferramenta leve, rápida e personalizável para descoberta de diretórios e arquivos em servidores web, desenvolvida em Python.
 
-![Python](https://img.shields.io/badge/Python-3.x-blue?style=for-the-badge&logo=python)
-![Status](https://img.shields.io/badge/Status-Active-green?style=for-the-badge)
-![Focus](https://img.shields.io/badge/Focus-Offensive%20Security-red?style=for-the-badge)
+![Field: Cybersecurity](https://img.shields.io/badge/Field-Cybersecurity-darkred.svg)
+![Focus: Recon](https://img.shields.io/badge/Focus-Recon-blueviolet.svg)
+![Offensive Security](https://img.shields.io/badge/Offensive-Security-red.svg)
+![Recon Automation](https://img.shields.io/badge/Recon-Automation-informational.svg)
+![Attack Surface Mapping](https://img.shields.io/badge/Attack%20Surface-Mapping-orange.svg)
+
 
 ## 📋 Sobre o Projeto
 
